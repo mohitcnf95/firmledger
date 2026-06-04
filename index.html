@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FirmLedger — Business Accounting</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0b0f1a; color: #e2e8f0; font-family: 'DM Sans', 'Segoe UI', sans-serif; }
+    input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0b0f1a; }
+    ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 3px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes slideIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useRef, useCallback, useEffect } = React;
+
+    // ── Config ────────────────────────────────────────────────────────────────
+    const SUPABASE_URL = "https://prarfxqazcusbpfgouxc.supabase.co";
+    const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InByYXJmeHFhemN1c2JwZmdvdXhjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAyOTc5NzQsImV4cCI6MjA5NTg3Mzk3NH0.PtbPZiGVl7uolNmZOpGD5vC-3Qnb4L-cm8bDUcJIwcA";
+    const TABLE = "firm_ledger_entries";
+
+    // ── Supabase ──────────────────────────────────────────────────────────────
+    const H = { "Content-Type": "application/json", apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, Prefer: "return=representation" };
+    const sbFetch = async (path, opts = {}) => {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { headers: H, ...opts });
+      if (!res.ok) throw new Error(await res.text());
+      const t = await res.text(); return t ? JSON.parse(t) : [];
+    };
+    const dbLoad  = ()      => sbFetch(`${TABLE}?select=*&order=date.desc`);
+    const dbInsert = row    => sbFetch(TABLE, { method: "POST", body: JSON.stringify(row) });
+    const dbDelete = id     => sbFetch(`${TABLE}?id=eq.${id}`, { method: "DELETE" });
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    const GST_RATES = [0, 5, 12, 18, 28];
+    const fmt = n => "₹" + Number(n || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const pn  = v => parseFloat(v) || 0;
+    const calcGST = (amount, rate) => {
+      const base = amount / (1 + rate / 100);
+      return { base: parseFloat(base.toFixed(2)), gst: parseFloat((amount - base).toFixed(2)) };
+    };
+    const toB64 = file => new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result.split(",")[1]);
+      r.onerror = () => rej(new Error("Read failed"));
+      r.readAsDataURL(file);
+    });
+
+    // ── AI Invoice Parser ─────────────────────────────────────────────────────
+    const parseInvoice = async (b64, fileType) => {
+      const isDoc = fileType === "application/pdf";
+      const isImg = fileType.startsWith("image/");
+      const instruction = `Extract invoice data. Return ONLY a JSON object (no markdown):
+{"invoiceNumber":"string or null","date":"YYYY-MM-DD or null","partyName":"vendor or customer name","gstRate":number,"gstAmount":number,"totalAmount":number,"type":"purchase or sale","description":"brief summary"}
+type=purchase means we bought it, type=sale means we sold it. Infer GST rate from amounts if not stated.`;
+
+      let content;
+      if (isDoc || isImg) {
+        content = [
+          { type: isDoc ? "document" : "image", source: { type: "base64", media_type: fileType, data: b64 } },
+          { type: "text", text: instruction }
+        ];
+      } else {
+        content = `${instruction}\n\nFile:\n${atob(b64)}`;
+      }
+
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content }] })
+      });
+      const data = await res.json();
+      const raw = (data.content || []).map(b => b.text || "").join("").replace(/```json|```/g, "").trim();
+      return JSON.parse(raw);
+    };
+
+    // ── Styles ────────────────────────────────────────────────────────────────
+    const S = {
+      header:  { background: "linear-gradient(135deg,#111827,#0f172a)", borderBottom: "1px solid #1e293b", padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" },
+      logo:    { fontSize: "18px", fontWeight: 800, background: "linear-gradient(90deg,#34d399,#38bdf8)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" },
+      navWrap: { display: "flex", gap: "2px", padding: "10px 20px 0", borderBottom: "1px solid #1e293b", overflowX: "auto" },
+      navBtn:  a => ({ padding: "8px 15px", fontSize: "13px", fontWeight: a ? 600 : 400, color: a ? "#34d399" : "#64748b", background: "none", border: "none", borderBottom: a ? "2px solid #34d399" : "2px solid transparent", cursor: "pointer", whiteSpace: "nowrap" }),
+      page:    { padding: "20px", maxWidth: "1120px", margin: "0 auto", animation: "slideIn 0.2s ease" },
+      grid:    n => ({ display: "grid", gridTemplateColumns: `repeat(${n},1fr)`, gap: "12px", marginBottom: "18px" }),
+      card:    b => ({ background: "#111827", border: `1px solid ${b || "#1e293b"}`, borderRadius: "12px", padding: "16px" }),
+      stat:    c => ({ background: "#111827", borderLeft: `3px solid ${c}`, border: `1px solid ${c}22`, borderRadius: "12px", padding: "16px" }),
+      lbl:     { fontSize: "10px", color: "#475569", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "5px" },
+      val:     c => ({ fontSize: "22px", fontWeight: 800, color: c || "#e2e8f0" }),
+      sub:     { fontSize: "11px", color: "#475569", marginTop: "3px" },
+      input:   { background: "#0b0f1a", border: "1px solid #1e293b", borderRadius: "8px", padding: "9px 11px", color: "#e2e8f0", fontSize: "13px", width: "100%", outline: "none" },
+      select:  { background: "#0b0f1a", border: "1px solid #1e293b", borderRadius: "8px", padding: "9px 11px", color: "#e2e8f0", fontSize: "13px", width: "100%", outline: "none" },
+      btn:     v => ({ padding: v === "sm" ? "5px 11px" : "9px 18px", borderRadius: "8px", border: "none", cursor: "pointer", fontSize: v === "sm" ? "11px" : "13px", fontWeight: 600, background: v === "danger" ? "#ef444418" : v === "ghost" ? "#1e293b" : "linear-gradient(135deg,#34d399,#38bdf8)", color: v === "danger" ? "#ef4444" : v === "ghost" ? "#94a3b8" : "#0b0f1a" }),
+      th:      { padding: "8px 10px", textAlign: "left", color: "#475569", fontSize: "10px", textTransform: "uppercase", borderBottom: "1px solid #1e293b" },
+      td:      { padding: "9px 10px", borderBottom: "1px solid #0f172a", color: "#cbd5e1", fontSize: "13px" },
+      zone:    { border: "2px dashed #1e293b", borderRadius: "12px", padding: "32px", textAlign: "center", cursor: "pointer", background: "#0f172a" },
+      tag:     c => ({ display: "inline-block", fontSize: "10px", fontWeight: 600, padding: "2px 7px", borderRadius: "20px", background: `${c}20`, color: c, border: `1px solid ${c}40` }),
+      pill:    a => ({ padding: "5px 12px", borderRadius: "20px", border: "none", cursor: "pointer", fontSize: "11px", fontWeight: 600, background: a ? "#34d39920" : "#1e293b", color: a ? "#34d399" : "#64748b" }),
+    };
+
+    const TABS = ["Dashboard", "Sales", "Purchases", "Manual Entry", "Report"];
+
+    // ── Entry Table ───────────────────────────────────────────────────────────
+    function EntryTable({ data, onDelete }) {
+      if (!data.length) return <div style={{ textAlign: "center", padding: "28px", color: "#334155", fontSize: "13px" }}>No entries found.</div>;
+      return (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>{["Date","Invoice #","Party","Description","Type","Total","GST","Base (ex-GST)",""].map(h => <th key={h} style={S.th}>{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {data.map(e => (
+                <tr key={e.id}>
+                  <td style={S.td}>{e.date}</td>
+                  <td style={{ ...S.td, color: "#475569" }}>{e.invoice_number || "—"}</td>
+                  <td style={{ ...S.td, fontWeight: 600 }}>{e.party_name}</td>
+                  <td style={{ ...S.td, color: "#94a3b8" }}>{(e.description||"").slice(0,28)}{(e.description||"").length>28?"…":""}</td>
+                  <td style={S.td}><span style={S.tag(e.type==="credit"?"#34d399":"#f87171")}>{e.type}</span></td>
+                  <td style={S.td}>{fmt(e.total_amount)}</td>
+                  <td style={{ ...S.td, color: "#fbbf24" }}>{fmt(e.gst_amount)} <span style={{ fontSize: "10px", color: "#475569" }}>({e.gst_rate}%)</span></td>
+                  <td style={{ ...S.td, fontWeight: 700, color: "#34d399" }}>{fmt(e.base_amount)}</td>
+                  <td style={S.td}><button style={S.btn("danger")} onClick={() => onDelete(e.id)}>✕</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    // ── App ───────────────────────────────────────────────────────────────────
+    function App() {
+      const [tab,      setTab]      = useState("Dashboard");
+      const [entries,  setEntries]  = useState([]);
+      const [loading,  setLoading]  = useState(true);
+      const [uploading,setUploading]= useState(false);
+      const [toast,    setToast]    = useState("");
+      const [period,   setPeriod]   = useState("all");
+      const [form,     setForm]     = useState({ type:"credit", category:"sale", partyName:"", description:"", amount:"", gstRate:18, date:new Date().toISOString().split("T")[0], invoiceNumber:"" });
+      const fileRef = useRef();
+
+      const showToast = msg => { setToast(msg); setTimeout(() => setToast(""), 3500); };
+
+      useEffect(() => {
+        dbLoad().then(r => setEntries(r||[])).catch(() => showToast("⚠️ Could not load data")).finally(() => setLoading(false));
+      }, []);
+
+      const addEntry = async row => {
+        try { const s = await dbInsert(row); setEntries(p => [s[0], ...p]); }
+        catch { showToast("❌ Failed to save"); }
+      };
+
+      const deleteEntry = async id => {
+        try { await dbDelete(id); setEntries(p => p.filter(e => e.id !== id)); showToast("Entry removed"); }
+        catch { showToast("❌ Failed to delete"); }
+      };
+
+      const handleFiles = useCallback(async e => {
+        const files = Array.from(e.target.files || []);
+        if (!files.length) return;
+        setUploading(true);
+        let ok = 0;
+        for (const file of files) {
+          try {
+            showToast(`⏳ Reading ${file.name}…`);
+            const b64 = await toB64(file);
+            const p   = await parseInvoice(b64, file.type);
+            const gstRate = pn(p.gstRate) || 18;
+            const total   = pn(p.totalAmount);
+            const { base, gst } = calcGST(total, gstRate);
+            await addEntry({ source:"upload", file_name:file.name, type:p.type==="sale"?"credit":"debit", category:p.type||"purchase", party_name:p.partyName||"Unknown", description:p.description||"Invoice", invoice_number:p.invoiceNumber||null, date:p.date||new Date().toISOString().split("T")[0], total_amount:total, gst_rate:gstRate, gst_amount:gst, base_amount:base });
+            ok++;
+          } catch { showToast(`❌ Error reading ${file.name}`); }
+        }
+        setUploading(false);
+        if (ok) showToast(`✅ ${ok} invoice(s) saved to cloud`);
+        fileRef.current.value = "";
+      }, []);
+
+      const handleManual = async () => {
+        const amt = pn(form.amount);
+        if (!amt || !form.partyName.trim()) return showToast("Party name & amount required");
+        const { base, gst } = calcGST(amt, pn(form.gstRate));
+        await addEntry({ source:"manual", file_name:null, type:form.type, category:form.category, party_name:form.partyName.trim(), description:form.description||form.category, invoice_number:form.invoiceNumber||null, date:form.date, total_amount:amt, gst_rate:pn(form.gstRate), gst_amount:gst, base_amount:base });
+        showToast("✅ Entry saved to cloud");
+        setForm(f => ({ ...f, partyName:"", description:"", amount:"", invoiceNumber:"" }));
+      };
+
+      const inPeriod = e => {
+        if (period==="all") return true;
+        const now=new Date(), d=new Date(e.date);
+        if (period==="month")   return d.getMonth()===now.getMonth() && d.getFullYear()===now.getFullYear();
+        if (period==="quarter") return Math.floor(d.getMonth()/3)===Math.floor(now.getMonth()/3) && d.getFullYear()===now.getFullYear();
+        if (period==="year")    return d.getFullYear()===now.getFullYear();
+        return true;
+      };
+      const all       = entries.filter(inPeriod);
+      const sales     = all.filter(e => e.category==="sale" || e.type==="credit");
+      const purchases = all.filter(e => e.category!=="sale" && e.type==="debit");
+      const sum       = (arr, k) => arr.reduce((s,e) => s + pn(e[k]), 0);
+      const tSaleBase = sum(sales,"base_amount"),   tSaleGST  = sum(sales,"gst_amount");
+      const tPurBase  = sum(purchases,"base_amount"),tPurGST  = sum(purchases,"gst_amount");
+      const netProfit = tSaleBase - tPurBase;
+      const gstPay    = tSaleGST  - tPurGST;
+
+      const PeriodPills = () => (
+        <div style={{ display:"flex", gap:"6px", flexWrap:"wrap" }}>
+          {["all","month","quarter","year"].map(p => (
+            <button key={p} style={S.pill(period===p)} onClick={() => setPeriod(p)}>
+              {p==="all"?"All Time":p.charAt(0).toUpperCase()+p.slice(1)}
+            </button>
+          ))}
+        </div>
+      );
+
+      if (loading) return (
+        <div style={{ minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", gap:"12px", background:"#0b0f1a" }}>
+          <div style={{ width:"20px", height:"20px", border:"2px solid #34d399", borderTopColor:"transparent", borderRadius:"50%", animation:"spin 0.8s linear infinite" }} />
+          <span style={{ color:"#64748b", fontSize:"14px" }}>Connecting to cloud…</span>
+        </div>
+      );
+
+      return (
+        <div style={{ minHeight:"100vh", background:"#0b0f1a", color:"#e2e8f0" }}>
+          {/* Toast */}
+          {toast && <div style={{ position:"fixed", top:"14px", right:"14px", background:"#1e293b", border:"1px solid #334155", borderRadius:"10px", padding:"10px 15px", fontSize:"13px", color:"#e2e8f0", zIndex:999, animation:"fadeIn 0.2s ease", maxWidth:"280px", boxShadow:"0 8px 24px #00000060" }}>{toast}</div>}
+
+          {/* Header */}
+          <div style={S.header}>
+            <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
+              <span style={{ fontSize:"20px" }}>📊</span>
+              <div>
+                <div style={S.logo}>FirmLedger</div>
+                <div style={{ fontSize:"10px", color:"#334155", marginTop:"1px" }}>Cloud · GST-Ready · Partner Shared</div>
+              </div>
+            </div>
+            <div style={{ display:"flex", alignItems:"center", gap:"7px" }}>
+              <span style={{ width:"7px", height:"7px", borderRadius:"50%", background:"#34d399", display:"inline-block" }} />
+              <span style={{ fontSize:"11px", color:"#475569" }}>Live · Supabase</span>
+            </div>
+          </div>
+
+          {/* Nav */}
+          <div style={S.navWrap}>
+            {TABS.map(t => <button key={t} style={S.navBtn(tab===t)} onClick={() => setTab(t)}>{t}</button>)}
+          </div>
+
+          <div style={S.page}>
+
+            {/* ── DASHBOARD ── */}
+            {tab==="Dashboard" && <>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:"10px", marginBottom:"18px" }}>
+                <div>
+                  <div style={{ fontSize:"18px", fontWeight:700 }}>Dashboard</div>
+                  <div style={{ fontSize:"12px", color:"#475569", marginTop:"3px" }}>Your firm's financials — live from cloud</div>
+                </div>
+                <PeriodPills />
+              </div>
+
+              <div style={S.grid(4)}>
+                {[
+                  { lbl:"Sales Revenue", val:fmt(tSaleBase), sub:`GST: ${fmt(tSaleGST)} · ${sales.length} entries`, color:"#34d399" },
+                  { lbl:"Total Purchases", val:fmt(tPurBase), sub:`GST: ${fmt(tPurGST)} · ${purchases.length} entries`, color:"#f87171" },
+                  { lbl:"Net Profit (ex-GST)", val:fmt(netProfit), sub:`${tSaleBase>0?((netProfit/tSaleBase)*100).toFixed(1):0}% margin`, color:netProfit>=0?"#38bdf8":"#fb923c" },
+                  { lbl:gstPay>=0?"GST Payable":"GST Refund", val:fmt(Math.abs(gstPay)), sub:gstPay>=0?"Payable to Govt":"Input > Output", color:gstPay>=0?"#fbbf24":"#a78bfa" },
+                ].map(({ lbl, val, sub, color }) => (
+                  <div key={lbl} style={S.stat(color)}>
+                    <div style={S.lbl}>{lbl}</div>
+                    <div style={S.val(color)}>{val}</div>
+                    <div style={S.sub}>{sub}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={S.card()}>
+                <div style={{ fontSize:"14px", fontWeight:600, marginBottom:"12px" }}>⚡ Upload Invoices</div>
+                <div style={S.zone} onClick={() => !uploading && fileRef.current?.click()}>
+                  {uploading
+                    ? <><div style={{ width:"22px", height:"22px", border:"2px solid #34d399", borderTopColor:"transparent", borderRadius:"50%", animation:"spin 0.8s linear infinite", margin:"0 auto 10px" }}/><div style={{ color:"#64748b", fontSize:"13px" }}>AI is reading your invoice…</div></>
+                    : <><div style={{ fontSize:"26px", marginBottom:"8px" }}>📤</div><div style={{ fontWeight:600, fontSize:"14px" }}>Click to upload invoices</div><div style={{ fontSize:"12px", color:"#475569", marginTop:"4px" }}>PDF, JPG, PNG, CSV — AI extracts everything automatically</div></>
+                  }
+                </div>
+                <input ref={fileRef} type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.csv,.txt" style={{ display:"none" }} onChange={handleFiles} />
+              </div>
+
+              {all.length > 0 && (
+                <div style={{ ...S.card(), marginTop:"14px" }}>
+                  <div style={{ fontSize:"14px", fontWeight:600, marginBottom:"12px" }}>Recent Entries</div>
+                  <EntryTable data={all.slice(0,6)} onDelete={deleteEntry} />
+                </div>
+              )}
+            </>}
+
+            {/* ── SALES ── */}
+            {tab==="Sales" && <>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:"10px", marginBottom:"16px" }}>
+                <div>
+                  <div style={{ fontSize:"18px", fontWeight:700 }}>Sales</div>
+                  <div style={{ fontSize:"12px", color:"#475569", marginTop:"3px" }}>{sales.length} entries · Base: {fmt(tSaleBase)} · GST: {fmt(tSaleGST)}</div>
+                </div>
+                <div style={{ display:"flex", gap:"8px", alignItems:"center", flexWrap:"wrap" }}>
+                  <PeriodPills />
+                  <button style={S.btn()} onClick={() => fileRef.current?.click()}>+ Upload Invoice</button>
+                </div>
+              </div>
+              <div style={S.card()}><EntryTable data={sales} onDelete={deleteEntry} /></div>
+              <input ref={fileRef} type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.csv" style={{ display:"none" }} onChange={handleFiles} />
+            </>}
+
+            {/* ── PURCHASES ── */}
+            {tab==="Purchases" && <>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:"10px", marginBottom:"16px" }}>
+                <div>
+                  <div style={{ fontSize:"18px", fontWeight:700 }}>Purchases</div>
+                  <div style={{ fontSize:"12px", color:"#475569", marginTop:"3px" }}>{purchases.length} entries · Base: {fmt(tPurBase)} · GST: {fmt(tPurGST)}</div>
+                </div>
+                <div style={{ display:"flex", gap:"8px", alignItems:"center", flexWrap:"wrap" }}>
+                  <PeriodPills />
+                  <button style={S.btn()} onClick={() => fileRef.current?.click()}>+ Upload Invoice</button>
+                </div>
+              </div>
+              <div style={S.card()}><EntryTable data={purchases} onDelete={deleteEntry} /></div>
+              <input ref={fileRef} type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.csv" style={{ display:"none" }} onChange={handleFiles} />
+            </>}
+
+            {/* ── MANUAL ENTRY ── */}
+            {tab==="Manual Entry" && <>
+              <div style={{ fontSize:"18px", fontWeight:700, marginBottom:"4px" }}>Manual Entry</div>
+              <div style={{ fontSize:"12px", color:"#475569", marginBottom:"16px" }}>Add credit / debit entries by hand — saved instantly to cloud</div>
+              <div style={S.card()}>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))", gap:"12px" }}>
+                  {[
+                    { lbl:"Entry Type", el:<select style={S.select} value={form.type} onChange={e=>setForm(f=>({...f,type:e.target.value}))}><option value="credit">Credit (Income / Sale)</option><option value="debit">Debit (Expense / Purchase)</option></select> },
+                    { lbl:"Category",   el:<select style={S.select} value={form.category} onChange={e=>setForm(f=>({...f,category:e.target.value}))}><option value="sale">Sale</option><option value="purchase">Purchase</option><option value="expense">Expense</option><option value="other">Other</option></select> },
+                    { lbl:"Date",       el:<input type="date" style={S.input} value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))} /> },
+                    { lbl:"Party Name *", el:<input style={S.input} placeholder="Vendor / Customer" value={form.partyName} onChange={e=>setForm(f=>({...f,partyName:e.target.value}))} /> },
+                    { lbl:"Invoice #",  el:<input style={S.input} placeholder="Optional" value={form.invoiceNumber} onChange={e=>setForm(f=>({...f,invoiceNumber:e.target.value}))} /> },
+                    { lbl:"Description",el:<input style={S.input} placeholder="What is this for?" value={form.description} onChange={e=>setForm(f=>({...f,description:e.target.value}))} /> },
+                    { lbl:"Total Amount (incl. GST) *", el:<input type="number" style={S.input} placeholder="e.g. 11800" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} /> },
+                    { lbl:"GST Rate",   el:<select style={S.select} value={form.gstRate} onChange={e=>setForm(f=>({...f,gstRate:e.target.value}))}>{GST_RATES.map(r=><option key={r} value={r}>{r}%</option>)}</select> },
+                  ].map(({ lbl, el }) => (
+                    <div key={lbl}><div style={{ ...S.lbl, marginBottom:"4px" }}>{lbl}</div>{el}</div>
+                  ))}
+                </div>
+                {form.amount && (
+                  <div style={{ marginTop:"12px", background:"#0b0f1a", borderRadius:"8px", padding:"10px 12px", fontSize:"12px", color:"#64748b", display:"inline-block" }}>
+                    Base: <b style={{ color:"#34d399" }}>{fmt(calcGST(pn(form.amount),pn(form.gstRate)).base)}</b>
+                    {"  "}GST: <b style={{ color:"#fbbf24" }}>{fmt(calcGST(pn(form.amount),pn(form.gstRate)).gst)}</b>
+                  </div>
+                )}
+                <div style={{ marginTop:"14px" }}>
+                  <button style={S.btn()} onClick={handleManual}>Save to Cloud ☁️</button>
+                </div>
+              </div>
+            </>}
+
+            {/* ── REPORT ── */}
+            {tab==="Report" && <>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:"10px", marginBottom:"16px" }}>
+                <div>
+                  <div style={{ fontSize:"18px", fontWeight:700 }}>Partner Report</div>
+                  <div style={{ fontSize:"12px", color:"#475569", marginTop:"3px" }}>Profit & Loss — ex-GST, ready to share</div>
+                </div>
+                <PeriodPills />
+              </div>
+
+              <div style={S.grid(3)}>
+                {[
+                  { icon:"💰", lbl:"Sales Revenue (ex-GST)", main:fmt(tSaleBase), sub1:`+ GST collected: ${fmt(tSaleGST)}`, sub2:`Gross: ${fmt(sum(sales,"total_amount"))}`, color:"#34d399" },
+                  { icon:"🛒", lbl:"Purchases / Costs (ex-GST)", main:fmt(tPurBase), sub1:`GST paid (ITC): ${fmt(tPurGST)}`, sub2:`Gross: ${fmt(sum(purchases,"total_amount"))}`, color:"#f87171" },
+                  { icon:netProfit>=0?"📈":"📉", lbl:"Net Profit (ex-GST)", main:fmt(netProfit), sub1:`Margin: ${tSaleBase>0?((netProfit/tSaleBase)*100).toFixed(1):0}%`, sub2:"", color:netProfit>=0?"#38bdf8":"#fb923c" },
+                ].map(({ icon, lbl, main, sub1, sub2, color }) => (
+                  <div key={lbl} style={{ ...S.card(`${color}30`), textAlign:"center" }}>
+                    <div style={{ fontSize:"24px", marginBottom:"6px" }}>{icon}</div>
+                    <div style={S.lbl}>{lbl}</div>
+                    <div style={{ fontSize:"24px", fontWeight:800, color }}>{main}</div>
+                    <div style={{ fontSize:"11px", color:"#475569", marginTop:"4px" }}>{sub1}</div>
+                    {sub2 && <div style={{ fontSize:"11px", color:"#64748b" }}>{sub2}</div>}
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ ...S.card(), marginBottom:"16px" }}>
+                <div style={{ fontSize:"14px", fontWeight:600, marginBottom:"12px" }}>🧾 GST Reconciliation</div>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))", gap:"14px" }}>
+                  <div><div style={S.lbl}>Output GST (on sales)</div><div style={{ fontSize:"18px", fontWeight:700, color:"#fbbf24" }}>{fmt(tSaleGST)}</div></div>
+                  <div><div style={S.lbl}>Input Tax Credit (on purchases)</div><div style={{ fontSize:"18px", fontWeight:700, color:"#a78bfa" }}>{fmt(tPurGST)}</div></div>
+                  <div><div style={S.lbl}>{gstPay>=0?"Net GST Payable":"GST Refund Due"}</div><div style={{ fontSize:"18px", fontWeight:700, color:gstPay>=0?"#fbbf24":"#34d399" }}>{fmt(Math.abs(gstPay))}</div></div>
+                </div>
+              </div>
+
+              <div style={S.card()}>
+                <div style={{ fontSize:"14px", fontWeight:600, marginBottom:"12px" }}>📋 All Transactions ({all.length})</div>
+                <EntryTable data={[...all].sort((a,b)=>new Date(b.date)-new Date(a.date))} onDelete={deleteEntry} />
+              </div>
+            </>}
+
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
