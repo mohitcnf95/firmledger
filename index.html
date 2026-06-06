@@ -80,160 +80,390 @@ type=purchase=we bought it, type=sale=we sold it.`;
 
 
   /* ── PDF Generator ── */
-  const generatePDF = (sales, purchases, expenses, all, tSB, tSG, tPB, tPG, netProfit, gstPay, margin, periodLabel, firmName) => {
+  const generatePDF = (sales, purchases, expenses, all, tSB, tSG, tPB, tPG, netProfit, gstPay, margin, periodLabel, firmName, firmAddress) => {
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ orientation:"portrait", unit:"mm", format:"a4" });
-    const W = doc.internal.pageSize.getWidth();
-    const fmtR = n => "Rs." + Number(n||0).toLocaleString("en-IN",{minimumFractionDigits:2,maximumFractionDigits:2});
+    const W = doc.internal.pageSize.getWidth();   // 210
+    const H = doc.internal.pageSize.getHeight();  // 297
+    const ML = 14, MR = 14, TW = W - ML - MR;
     let y = 0;
 
-    const checkPage = (need) => { if (y + need > 270) { doc.addPage(); y = 16; } };
+    // ── colour palette ──
+    const col = {
+      navy:    [10, 22, 50],
+      teal:    [0, 150, 136],
+      tealL:   [0, 200, 180],
+      white:   [255,255,255],
+      offWhite:[248,249,252],
+      border:  [220,226,235],
+      textDark:[15,30,60],
+      textMid: [80,95,120],
+      textSub: [130,145,165],
+      green:   [22,163,74],
+      greenL:  [220,252,231],
+      red:     [220,38,38],
+      redL:    [254,226,226],
+      amber:   [180,83,9],
+      amberL:  [254,243,199],
+      blue:    [37,99,235],
+      blueL:   [219,234,254],
+      purple:  [109,40,217],
+      purpleL: [237,233,254],
+    };
 
-    // ── Header banner ──
-    doc.setFillColor(17,24,39);
-    doc.rect(0,0,W,28,"F");
-    doc.setTextColor(52,211,153);
-    doc.setFontSize(20); doc.setFont("helvetica","bold");
-    doc.text(firmName || "FirmLedger", 14, 12);
-    doc.setFontSize(9); doc.setFont("helvetica","normal");
-    doc.setTextColor(148,163,184);
-    doc.text("Business Profit & Loss Report", 14, 19);
-    doc.text("Period: " + periodLabel, 14, 25);
-    doc.setTextColor(100,116,139);
-    doc.text("Generated: " + new Date().toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}), W-14, 25, {align:"right"});
-    y = 36;
+    // ── helpers ──
+    const fmtR = n => {
+      const abs = Math.abs(Number(n||0));
+      const str = abs.toLocaleString("en-IN",{minimumFractionDigits:2,maximumFractionDigits:2});
+      return (Number(n)<0?"(":"")+String.fromCharCode(8377)+str+(Number(n)<0?")":"");
+    };
+    const setFont = (size, style, rgb) => {
+      doc.setFontSize(size);
+      doc.setFont("helvetica", style||"normal");
+      if(rgb) doc.setTextColor(rgb[0],rgb[1],rgb[2]);
+    };
+    const hline = (yy, lw, rgb) => {
+      doc.setDrawColor(rgb?rgb[0]:col.border[0], rgb?rgb[1]:col.border[1], rgb?rgb[2]:col.border[2]);
+      doc.setLineWidth(lw||0.25);
+      doc.line(ML, yy, W-MR, yy);
+    };
+    const checkPage = need => {
+      if (y + need > H - 16) { doc.addPage(); drawPageFooter(); y = 20; }
+    };
 
-    // ── Summary boxes ──
-    const boxes = [
-      { label:"Total Sales (ex-GST)",     value:fmtR(tSB),           color:[52,211,153]  },
-      { label:"Total Purchases (ex-GST)", value:fmtR(tPB),           color:[248,113,113] },
-      { label:"Total Expenses",           value:fmtR(expenses.reduce((s,e)=>s+e.base_amount,0)), color:[251,191,36] },
-      { label:"Net Profit (ex-GST)",      value:fmtR(netProfit),      color:netProfit>=0?[56,189,248]:[251,146,60] },
-      { label:"Net Margin",               value:margin+"%",           color:[167,139,250] },
-      { label:gstPay>=0?"GST Payable":"GST Refund", value:fmtR(Math.abs(gstPay)), color:[251,191,36] },
+    // ── footer function (called on each page) ──
+    const drawPageFooter = () => {
+      const pg = doc.internal.getCurrentPageInfo().pageNumber;
+      const tot = ""; // filled after
+      doc.setFillColor(...col.navy);
+      doc.rect(0, H-10, W, 10, "F");
+      setFont(7,"normal",col.textSub);
+      doc.setTextColor(160,175,200);
+      doc.text("CONFIDENTIAL — "+( firmName||"FirmLedger")+" — Financial Summary Report", ML, H-4);
+      doc.text("Page "+pg, W-MR, H-4, {align:"right"});
+    };
+
+    // ═══════════════════════════════════════════════════
+    // PAGE 1 — COVER / HEADER
+    // ═══════════════════════════════════════════════════
+
+    // Deep navy header block
+    doc.setFillColor(...col.navy);
+    doc.rect(0, 0, W, 52, "F");
+
+    // Teal left accent bar
+    doc.setFillColor(...col.teal);
+    doc.rect(0, 0, 4, 52, "F");
+
+    // Firm name
+    setFont(22, "bold", col.white);
+    doc.text((firmName||"FirmLedger").toUpperCase(), 10, 18);
+
+    // Underline accent
+    doc.setFillColor(...col.teal);
+    doc.rect(10, 20, Math.min(doc.getTextWidth((firmName||"FirmLedger").toUpperCase()), TW), 0.8, "F");
+
+    // Address
+    setFont(8, "normal", [160,175,200]);
+    doc.text(firmAddress||"", 10, 27);
+
+    // Report title
+    setFont(10, "bold", col.tealL);
+    doc.text("FINANCIAL SUMMARY & PROFITABILITY REPORT", 10, 37);
+    setFont(8, "normal", [160,175,200]);
+    doc.text("Excluding GST / Taxes  |  All figures represent exact Taxable Value", 10, 43);
+
+    // Date right-aligned
+    const genDate = new Date().toLocaleDateString("en-IN",{day:"2-digit",month:"long",year:"numeric"});
+    setFont(8,"normal",[160,175,200]);
+    doc.text("Report Date: "+genDate, W-MR, 37, {align:"right"});
+    setFont(8,"normal",[160,175,200]);
+    doc.text("Period: "+periodLabel, W-MR, 43, {align:"right"});
+
+    y = 60;
+
+    // ── KPI summary strip ──
+    const kpis = [
+      { label:"Total Sales",    value:fmtR(tSB),  bg:col.greenL,  border:col.green,  text:col.green  },
+      { label:"Total Costs",    value:fmtR(tPB+expenses.reduce((s,e)=>s+pn(e.base_amount),0)), bg:col.redL, border:col.red, text:col.red },
+      { label:"Net Profit",     value:fmtR(netProfit), bg:netProfit>=0?col.blueL:col.redL, border:netProfit>=0?col.blue:col.red, text:netProfit>=0?col.blue:col.red },
+      { label:"Net Margin",     value:margin+"%", bg:col.purpleL, border:col.purple,  text:col.purple },
     ];
-    const bw = (W-28)/3, bh = 18, gap = 4;
-    boxes.forEach((b,i) => {
-      const col = i%3, row = Math.floor(i/3);
-      const bx = 14 + col*(bw+gap), by = y + row*(bh+gap);
-      doc.setFillColor(17,24,39); doc.roundedRect(bx,by,bw,bh,2,2,"F");
-      doc.setDrawColor(b.color[0],b.color[1],b.color[2]); doc.setLineWidth(0.5);
-      doc.line(bx,by+bh,bx+bw,by+bh);
-      doc.setFontSize(7); doc.setFont("helvetica","normal"); doc.setTextColor(100,116,139);
-      doc.text(b.label.toUpperCase(), bx+4, by+6);
-      doc.setFontSize(11); doc.setFont("helvetica","bold"); doc.setTextColor(b.color[0],b.color[1],b.color[2]);
-      doc.text(b.value, bx+4, by+14);
+    const kw = (TW - 9) / 4;
+    kpis.forEach((k,i) => {
+      const kx = ML + i*(kw+3);
+      doc.setFillColor(...k.bg);
+      doc.roundedRect(kx, y, kw, 20, 2, 2, "F");
+      doc.setDrawColor(...k.border);
+      doc.setLineWidth(0.4);
+      doc.roundedRect(kx, y, kw, 20, 2, 2, "S");
+      // top colour accent
+      doc.setFillColor(...k.border);
+      doc.roundedRect(kx, y, kw, 3, 2, 2, "F");
+      doc.rect(kx, y+1.5, kw, 1.5, "F");
+      setFont(6.5,"bold",k.border);
+      doc.text(k.label.toUpperCase(), kx+4, y+9);
+      setFont(10,"bold",k.text);
+      doc.text(k.value, kx+4, y+17);
     });
-    y += 2*(bh+gap) + 8;
+    y += 28;
 
-    // ── GST Reconciliation box ──
-    checkPage(22);
-    doc.setFillColor(17,24,39); doc.roundedRect(14,y,W-28,18,2,2,"F");
-    doc.setFontSize(8); doc.setFont("helvetica","bold"); doc.setTextColor(226,232,240);
-    doc.text("GST RECONCILIATION", 18, y+6);
-    const gstItems = [
-      { l:"Output GST (Sales)",    v:fmtR(tSG),              c:[251,191,36]  },
-      { l:"Input GST (Purchases)", v:fmtR(tPG),              c:[167,139,250] },
-      { l:gstPay>=0?"Net Payable":"Net Refund", v:fmtR(Math.abs(gstPay)), c:gstPay>=0?[251,191,36]:[52,211,153] },
+    // ── GST reconciliation strip ──
+    doc.setFillColor(240,244,250);
+    doc.roundedRect(ML, y, TW, 16, 2, 2, "F");
+    doc.setDrawColor(...col.border);
+    doc.setLineWidth(0.25);
+    doc.roundedRect(ML, y, TW, 16, 2, 2, "S");
+    setFont(7,"bold",col.textMid);
+    doc.text("GST RECONCILIATION", ML+4, y+6);
+    const gstCols = [
+      { l:"Output GST (Sales)",       v:fmtR(tSG),            c:col.amber  },
+      { l:"Input GST (ITC on Purchases)", v:fmtR(tPG),        c:col.purple },
+      { l:gstPay>=0?"Net GST Payable":"Net GST Refund Due",  v:fmtR(Math.abs(gstPay)), c:gstPay>=0?col.red:col.green },
     ];
-    const gw = (W-28-8)/3;
-    gstItems.forEach((g,i) => {
-      const gx = 18 + i*(gw+4);
-      doc.setFontSize(7); doc.setFont("helvetica","normal"); doc.setTextColor(100,116,139);
-      doc.text(g.l, gx, y+11);
-      doc.setFontSize(9); doc.setFont("helvetica","bold"); doc.setTextColor(g.c[0],g.c[1],g.c[2]);
-      doc.text(g.v, gx, y+17);
+    const gcw = (TW-30)/3;
+    gstCols.forEach((g,i)=>{
+      const gx = ML+28+i*(gcw+3);
+      setFont(6.5,"normal",col.textSub);
+      doc.text(g.l, gx, y+6);
+      setFont(9,"bold",g.c);
+      doc.text(g.v, gx, y+13);
     });
-    y += 26;
+    y += 24;
 
-    // ── Helper to draw a section table ──
-    const drawTable = (title, color, rows, emptyMsg) => {
-      checkPage(20);
-      doc.setFontSize(10); doc.setFont("helvetica","bold");
-      doc.setTextColor(color[0],color[1],color[2]);
-      doc.text(title, 14, y); y += 5;
-      if (!rows.length) {
-        doc.setFontSize(8); doc.setFont("helvetica","normal"); doc.setTextColor(100,116,139);
-        doc.text(emptyMsg, 14, y); y += 8; return;
+    // ═══════════════════════════════════════════════════
+    // SECTION 1 — SALES
+    // ═══════════════════════════════════════════════════
+    const drawSectionHeader = (num, title, accentCol, count, total) => {
+      checkPage(18);
+      // Section number pill
+      doc.setFillColor(...accentCol);
+      doc.roundedRect(ML, y, 6, 6, 1, 1, "F");
+      setFont(8,"bold",col.white);
+      doc.text(num, ML+2.2, y+4.5);
+      // Title
+      setFont(11,"bold",col.textDark);
+      doc.text(title, ML+9, y+5);
+      // Count + total right
+      setFont(8,"normal",col.textMid);
+      doc.text(count+" entries  |  Total (ex-GST): "+total, W-MR, y+5, {align:"right"});
+      y += 9;
+      hline(y, 0.4, accentCol);
+      y += 5;
+    };
+
+    const drawEntryTable = (rows, accentCol) => {
+      if(!rows.length){
+        setFont(8,"italic",col.textSub);
+        doc.text("No entries for this period.", ML+4, y+4);
+        y += 10; return;
       }
-      const body = rows.map(e=>[
-        e.date||"", e.party_name||"", (e.description||"").slice(0,28), e.invoice_number||"—",
-        fmtR(e.total_amount), e.gst_rate+"%", fmtR(e.gst_amount), fmtR(e.base_amount)
-      ]);
-      // subtotal row
       const baseSum = rows.reduce((s,e)=>s+pn(e.base_amount),0);
       const gstSum  = rows.reduce((s,e)=>s+pn(e.gst_amount),0);
       const totSum  = rows.reduce((s,e)=>s+pn(e.total_amount),0);
-      body.push(["","","SUBTOTAL","",fmtR(totSum),"",fmtR(gstSum),fmtR(baseSum)]);
+
+      const body = rows.map((e,idx)=>[
+        String(idx+1),
+        e.invoice_number||"—",
+        e.party_name||"",
+        (e.description||"").slice(0,32),
+        e.date||"",
+        fmtR(e.total_amount),
+        (e.gst_rate||0)+"%",
+        fmtR(e.gst_amount),
+        fmtR(e.base_amount),
+      ]);
 
       doc.autoTable({
         startY: y,
-        head: [["Date","Party","Description","Inv#","Total","GST%","GST Amt","Base (ex-GST)"]],
+        head: [["#","Inv. No.","Party / Vendor","Description","Date","Total Amt","GST%","GST Amt","Taxable Value (ex-GST)"]],
         body,
-        styles:{ fontSize:7, cellPadding:2.5, textColor:[203,213,225], fillColor:[17,24,39], lineColor:[30,41,59], lineWidth:0.2 },
-        headStyles:{ fillColor:[15,23,42], textColor:[100,116,139], fontStyle:"bold", fontSize:6.5 },
-        footStyles:{ fillColor:[15,23,42] },
-        alternateRowStyles:{ fillColor:[15,23,42] },
-        didParseCell: (data) => {
-          if (data.row.index === body.length-1) {
+        foot: [["","","","","","→ "+fmtR(totSum),"","→ "+fmtR(gstSum),"→ "+fmtR(baseSum)]],
+        styles:{ fontSize:7.5, cellPadding:{top:3,bottom:3,left:3,right:3}, textColor:col.textDark, fillColor:col.white, lineColor:col.border, lineWidth:0.2, overflow:"ellipsize" },
+        headStyles:{ fillColor:accentCol, textColor:col.white, fontStyle:"bold", fontSize:7, cellPadding:{top:4,bottom:4,left:3,right:3} },
+        footStyles:{ fillColor:col.offWhite, textColor:col.textDark, fontStyle:"bold", fontSize:7.5 },
+        alternateRowStyles:{ fillColor:col.offWhite },
+        margin:{ left:ML, right:MR },
+        theme:"grid",
+        columnStyles:{
+          0:{cellWidth:6,  halign:"center"},
+          1:{cellWidth:16, halign:"center"},
+          2:{cellWidth:30},
+          3:{cellWidth:36},
+          4:{cellWidth:18, halign:"center"},
+          5:{cellWidth:24, halign:"right"},
+          6:{cellWidth:10, halign:"center"},
+          7:{cellWidth:20, halign:"right"},
+          8:{cellWidth:22, halign:"right", fontStyle:"bold"},
+        },
+        didParseCell: data => {
+          if(data.section==="foot"){
+            data.cell.styles.textColor = accentCol;
             data.cell.styles.fontStyle = "bold";
-            data.cell.styles.textColor = color;
-            data.cell.styles.fillColor = [8,12,20];
           }
         },
-        margin:{ left:14, right:14 },
-        theme:"grid",
-        columnStyles:{ 0:{cellWidth:18}, 1:{cellWidth:28}, 2:{cellWidth:38}, 3:{cellWidth:14}, 4:{cellWidth:22,halign:"right"}, 5:{cellWidth:10,halign:"center"}, 6:{cellWidth:20,halign:"right"}, 7:{cellWidth:22,halign:"right"} }
       });
-      y = doc.lastAutoTable.finalY + 10;
+      y = doc.lastAutoTable.finalY + 6;
+
+      // Subtotal badge
+      checkPage(10);
+      doc.setFillColor(...accentCol);
+      doc.roundedRect(W-MR-52, y-4, 52, 9, 1.5, 1.5, "F");
+      setFont(7,"bold",col.white);
+      doc.text("SUBTOTAL (ex-GST):", W-MR-50, y+1.5);
+      doc.text(fmtR(baseSum), W-MR-2, y+1.5, {align:"right"});
+      y += 10;
     };
 
-    drawTable("SALES", [52,211,153], sales, "No sales entries for this period.");
-    drawTable("PURCHASES", [248,113,113], purchases, "No purchase entries for this period.");
-    drawTable("EXPENSES", [251,191,36], expenses, "No expense entries for this period.");
+    drawSectionHeader("1","VERIFIED REVENUE  —  Sales (Excl. GST)", col.green, sales.length, fmtR(tSB));
+    drawEntryTable(sales, col.green);
 
-    // ── P&L Summary at end ──
-    checkPage(50);
-    doc.setFillColor(8,12,20); doc.roundedRect(14,y,W-28,44,3,3,"F");
-    doc.setDrawColor(52,211,153); doc.setLineWidth(0.3);
-    doc.roundedRect(14,y,W-28,44,3,3,"S");
-    doc.setFontSize(9); doc.setFont("helvetica","bold"); doc.setTextColor(226,232,240);
-    doc.text("PROFIT & LOSS SUMMARY", 18, y+8);
-    const plRows = [
-      { l:"Total Sales Revenue (ex-GST)",     v:fmtR(tSB),       c:[52,211,153]  },
-      { l:"Less: Total Purchases (ex-GST)",    v:"– "+fmtR(tPB),  c:[248,113,113] },
-      { l:"Less: Total Expenses (ex-GST)",     v:"– "+fmtR(expenses.reduce((s,e)=>s+e.base_amount,0)), c:[251,191,36] },
-      { l:"NET PROFIT (ex-GST)",               v:fmtR(netProfit), c:netProfit>=0?[56,189,248]:[251,146,60] },
-      { l:"Net Margin %",                      v:margin+"%",      c:[167,139,250] },
-    ];
-    plRows.forEach((r,i) => {
-      const ry = y+14+(i*5.5);
-      const isFinal = i===3;
-      if(isFinal){ doc.setDrawColor(30,41,59); doc.setLineWidth(0.2); doc.line(18,ry-2,W-18,ry-2); }
-      doc.setFontSize(isFinal?8.5:7.5);
-      doc.setFont("helvetica", isFinal?"bold":"normal");
-      doc.setTextColor(isFinal?r.c[0]:148, isFinal?r.c[1]:163, isFinal?r.c[2]:184);
-      doc.text(r.l, 18, ry);
-      doc.setTextColor(r.c[0],r.c[1],r.c[2]);
-      doc.setFont("helvetica","bold");
-      doc.text(r.v, W-18, ry, {align:"right"});
-    });
-    y += 52;
+    checkPage(14);
+    drawSectionHeader("2","VERIFIED OPERATING COSTS  —  Purchases (Excl. GST)", col.red, purchases.length, fmtR(tPB));
+    drawEntryTable(purchases, col.red);
 
-    // ── Footer on all pages ──
-    const pages = doc.internal.getNumberOfPages();
-    for(let i=1;i<=pages;i++){
-      doc.setPage(i);
-      doc.setFontSize(7); doc.setFont("helvetica","normal"); doc.setTextColor(71,85,105);
-      doc.text("FirmLedger · Confidential · Generated "+new Date().toLocaleString("en-IN"), W/2, 290, {align:"center"});
-      doc.text("Page "+i+" of "+pages, W-14, 290, {align:"right"});
+    const expBase = expenses.reduce((s,e)=>s+pn(e.base_amount),0);
+    if(expenses.length){
+      checkPage(14);
+      drawSectionHeader("3","OTHER EXPENSES  (Excl. GST)", col.amber, expenses.length, fmtR(expBase));
+      drawEntryTable(expenses, col.amber);
     }
 
-    const fname = "FirmLedger_Report_"+new Date().toISOString().split("T")[0]+".pdf";
+    // ═══════════════════════════════════════════════════
+    // FINAL P&L STATEMENT
+    // ═══════════════════════════════════════════════════
+    checkPage(68);
+
+    // Section header
+    const secNum = expenses.length ? "4" : "3";
+    doc.setFillColor(...col.navy);
+    doc.roundedRect(ML, y, 6, 6, 1, 1, "F");
+    setFont(8,"bold",col.white);
+    doc.text(secNum, ML+2.2, y+4.5);
+    setFont(11,"bold",col.textDark);
+    doc.text("FINAL PROFITABILITY STATEMENT", ML+9, y+5);
+    y += 9;
+    hline(y, 0.5, col.navy);
+    y += 6;
+
+    // P&L statement box
+    const boxH = 62;
+    doc.setFillColor(248,250,253);
+    doc.roundedRect(ML, y, TW, boxH, 3, 3, "F");
+    doc.setDrawColor(...col.navy);
+    doc.setLineWidth(0.4);
+    doc.roundedRect(ML, y, TW, boxH, 3, 3, "S");
+    // Left accent
+    doc.setFillColor(...col.teal);
+    doc.rect(ML, y+3, 3, boxH-6, "F");
+
+    const plRows = [
+      { label:"Total Sales Revenue",            value:tSB,                  note:"(Excl. GST)", positive:true,  isSub:false },
+      { label:"Less: Total Purchase Costs",      value:-tPB,                 note:"(Excl. GST)", positive:false, isSub:false },
+      { label:"Less: Other Expenses",            value:-expBase,             note:"(Excl. GST)", positive:false, isSub:false },
+    ];
+    let ry = y + 8;
+    const lx = ML+8, vx = W-MR-4;
+
+    plRows.forEach((r,i) => {
+      setFont(8.5, "normal", col.textDark);
+      doc.text(r.label, lx, ry);
+      setFont(7.5, "normal", col.textSub);
+      doc.text(r.note, lx+72, ry);
+      setFont(8.5, "bold", r.positive ? col.green : col.red);
+      doc.text(fmtR(Math.abs(r.value)), vx, ry, {align:"right"});
+      if(!r.positive && r.value !== 0){
+        setFont(8,"normal",col.textSub);
+        doc.text("—", vx-doc.getTextWidth(fmtR(Math.abs(r.value)))-3, ry);
+      }
+      ry += 9;
+      // dashed separator
+      doc.setDrawColor(...col.border);
+      doc.setLineWidth(0.15);
+      doc.setLineDash([1,1.5], 0);
+      doc.line(lx, ry-4, W-MR-4, ry-4);
+      doc.setLineDash([], 0);
+    });
+
+    // Double rule before net profit
+    ry += 1;
+    hline(ry, 0.6, col.navy);
+    hline(ry+1.2, 0.25, col.navy);
+    ry += 6;
+
+    // NET PROFIT row — big
+    doc.setFillColor(...(netProfit>=0?col.greenL:col.redL));
+    doc.roundedRect(ML+5, ry-5, TW-10, 13, 2, 2, "F");
+    setFont(10,"bold", netProfit>=0?col.green:col.red);
+    doc.text("NET PROFIT  (Excl. GST & Taxes)", lx+2, ry+3);
+    setFont(11,"bold", netProfit>=0?col.green:col.red);
+    doc.text(fmtR(netProfit), vx, ry+3, {align:"right"});
+    ry += 18;
+
+    // Net margin + GST payable inline
+    setFont(8,"normal",col.textMid);
+    doc.text("Net Profit Margin:", lx+2, ry);
+    setFont(8,"bold",col.purple);
+    doc.text(margin+"%", lx+38, ry);
+    doc.text("|", lx+52, ry);
+    setFont(8,"normal",col.textMid);
+    doc.text(gstPay>=0?"GST Payable to Govt:":"GST Refund Due:", lx+57, ry);
+    setFont(8,"bold",gstPay>=0?col.amber:col.green);
+    doc.text(fmtR(Math.abs(gstPay)), lx+105, ry);
+
+    y += boxH + 10;
+
+    // ── Reconciliation note ──
+    checkPage(20);
+    doc.setFillColor(255,252,235);
+    doc.setDrawColor(251,191,36);
+    doc.setLineWidth(0.3);
+    doc.roundedRect(ML, y, TW, 18, 2, 2, "FD");
+    doc.setFillColor(251,191,36);
+    doc.rect(ML, y+2, 3, 14, "F");
+    setFont(7,"bold",[120,80,0]);
+    doc.text("RECONCILIATION NOTE", ML+6, y+6);
+    setFont(6.5,"normal",[100,80,0]);
+    const note = "All figures represent the exact Taxable Value as printed on invoices. Mixed GST slabs (5%, 12%, 18%, 28%) are handled by back-calculating base amounts from invoice totals. This methodology ensures absolute accuracy in pre-tax profitability independent of GST rate variations.";
+    const noteLines = doc.splitTextToSize(note, TW-12);
+    doc.text(noteLines, ML+6, y+11);
+    y += 24;
+
+    // ── Signature block ──
+    checkPage(30);
+    doc.setDrawColor(...col.border);
+    doc.setLineWidth(0.2);
+    const sigX1 = ML, sigX2 = W/2+5;
+    doc.line(sigX1, y+18, sigX1+55, y+18);
+    doc.line(sigX2, y+18, sigX2+55, y+18);
+    setFont(7.5,"normal",col.textMid);
+    doc.text("Authorised Signatory", sigX1, y+22);
+    doc.text("Partner / Director", sigX2, y+22);
+    setFont(7,"normal",col.textSub);
+    doc.text("Name & Designation", sigX1, y+26);
+    doc.text("Name & Designation", sigX2, y+26);
+    doc.text("Date: _______________", sigX1, y+30);
+    doc.text("Date: _______________", sigX2, y+30);
+    y += 34;
+
+    // ── Footer on all pages ──
+    const totalPages = doc.internal.getNumberOfPages();
+    for(let i=1;i<=totalPages;i++){
+      doc.setPage(i);
+      doc.setFillColor(...col.navy);
+      doc.rect(0, H-10, W, 10, "F");
+      doc.setFillColor(...col.teal);
+      doc.rect(0, H-10, 4, 10, "F");
+      setFont(6.5,"normal",[160,175,200]);
+      doc.text("CONFIDENTIAL  —  "+(firmName||"FirmLedger")+"  —  Financial Summary & Profitability Report (Excl. GST)", ML+2, H-4);
+      doc.text("Page "+i+" of "+totalPages, W-MR, H-4, {align:"right"});
+    }
+
+    const fname = (firmName||"FirmLedger").replace(/\s+/g,"_")+"_PnL_Report_"+new Date().toISOString().split("T")[0]+".pdf";
     doc.save(fname);
   };
 
-  /* ── Design tokens ── */
+    /* ── Design tokens ── */
   const C = { bg:"#080c14", surface:"#111827", border:"#1e293b", muted:"#475569", text:"#e2e8f0", sub:"#94a3b8", green:"#34d399", red:"#f87171", blue:"#38bdf8", yellow:"#fbbf24", purple:"#a78bfa", orange:"#fb923c" };
 
   const inp  = { background:C.bg, border:`1px solid ${C.border}`, borderRadius:"10px", padding:"12px 14px", color:C.text, fontSize:"15px", width:"100%", outline:"none" };
@@ -328,6 +558,7 @@ type=purchase=we bought it, type=sale=we sold it.`;
     const [dateTo,    setDateTo]    = useState("");
     const [form, setForm] = useState({ type:"credit", category:"sale", partyName:"", description:"", amount:"", gstRate:18, date:today(), invoiceNumber:"" });
     const [firmName, setFirmName] = useState(localStorage.getItem("firmName")||"My Firm");
+    const [firmAddress, setFirmAddress] = useState(localStorage.getItem("firmAddress")||"");
     const fileRef = useRef();
 
     const showToast = msg => { setToast(msg); setTimeout(()=>setToast(""),3200); };
@@ -588,17 +819,28 @@ type=purchase=we bought it, type=sale=we sold it.`;
               <div style={{ fontSize:"17px",fontWeight:700 }}>Partner Report</div>
               <button
                 style={{ ...btn("sm"), background:"linear-gradient(135deg,#6366f1,#8b5cf6)", color:"#fff", display:"flex",alignItems:"center",gap:"5px" }}
-                onClick={()=>generatePDF(sales,purchases,expenses,all,tSB,tSG,tPB,tPG,netProfit,gstPay,margin,periodLabel,firmName)}
+                onClick={()=>generatePDF(sales,purchases,expenses,all,tSB,tSG,tPB,tPG,netProfit,gstPay,margin,periodLabel,firmName,firmAddress)}
               >📄 PDF</button>
             </div>
             <div style={{ fontSize:"11px",color:C.muted,marginBottom:"12px" }}>Profit & Loss · ex-GST · ready to share</div>
 
-            {/* Firm name input */}
-            <div style={{ ...card(),marginBottom:"12px",display:"flex",alignItems:"center",gap:"10px" }}>
-              <span style={{ fontSize:"12px",color:C.muted,whiteSpace:"nowrap" }}>Firm Name:</span>
-              <input style={{ ...inp,fontSize:"13px",padding:"8px 10px" }} value={firmName}
-                onChange={e=>{ setFirmName(e.target.value); localStorage.setItem("firmName",e.target.value); }}
-                placeholder="Your firm name for PDF header" />
+            {/* Firm info inputs */}
+            <div style={{ ...card(),marginBottom:"12px" }}>
+              <div style={{ fontSize:"11px",fontWeight:700,color:C.sub,textTransform:"uppercase",letterSpacing:"0.8px",marginBottom:"10px" }}>📋 Firm Details (for PDF)</div>
+              <div style={{ display:"flex",flexDirection:"column",gap:"8px" }}>
+                <div>
+                  <div style={{ fontSize:"10px",color:C.muted,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:"4px" }}>Firm Name</div>
+                  <input style={{ ...inp,fontSize:"13px",padding:"9px 11px" }} value={firmName}
+                    onChange={e=>{ setFirmName(e.target.value); localStorage.setItem("firmName",e.target.value); }}
+                    placeholder="e.g. Siddhi Vinayak Traders" />
+                </div>
+                <div>
+                  <div style={{ fontSize:"10px",color:C.muted,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:"4px" }}>Address / Tagline</div>
+                  <input style={{ ...inp,fontSize:"13px",padding:"9px 11px" }} value={firmAddress}
+                    onChange={e=>{ setFirmAddress(e.target.value); localStorage.setItem("firmAddress",e.target.value); }}
+                    placeholder="e.g. 12/306 Arya Nagar, Firozabad, UP 283203" />
+                </div>
+              </div>
             </div>
 
             <div style={{ marginBottom:"14px" }}><DateFilter {...filterProps}/></div>
